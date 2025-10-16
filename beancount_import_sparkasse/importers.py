@@ -27,6 +27,23 @@ from beancount_import_sparkasse.models import TXN
 logger = logging.getLogger(__name__)
 
 
+def _clean_whitespace(text: str) -> str:
+    """Clean redundant whitespace from text fields.
+
+    Removes leading/trailing whitespace and collapses multiple
+    consecutive whitespace characters into single spaces.
+
+    Args:
+        text: Input text to clean
+
+    Returns:
+        Cleaned text with normalized whitespace
+    """
+    if not text:
+        return text
+    return re.sub(r"\s+", " ", text.strip())
+
+
 @dataclass
 class BaseImporter(Importer):
     iban: str
@@ -174,8 +191,8 @@ class SparkasseCSVCAMTImporter(BaseImporter):
                 csv_row["Valutadatum"], self.date_format
             ).date(),  # type: ignore
             posting_type=csv_row["Buchungstext"],
-            reference=csv_row["Verwendungszweck"],
-            payee_name=csv_row["Beguenstigter/Zahlungspflichtiger"],
+            reference=_clean_whitespace(csv_row["Verwendungszweck"]),
+            payee_name=_clean_whitespace(csv_row["Beguenstigter/Zahlungspflichtiger"]),
             payee_iban=csv_row["Kontonummer/IBAN"],
             payee_bic=csv_row["BIC (SWIFT-Code)"],
             amount=self.parse_amount(csv_row["Betrag"]),

@@ -160,3 +160,46 @@ def test_extract(csv_file):
     assert len(txns[0].postings) == 1
     assert txns[0].postings[0].units.number == Decimal("1.23")
     assert txns[0].postings[0].units.currency == currency
+
+
+def test_whitespace_cleaning():
+    """Test that whitespace is cleaned from payee and narration fields."""
+    date_format = "%Y-%m-%d"
+    owner_iban = fake_iban()
+    booking_date = "2000-01-01"
+    posting_type = "KARTENZAHLUNG"
+    # Test strings with various whitespace issues
+    reference_with_whitespace = "  Multiple    spaces   and\ttabs\n  "
+    payee_with_whitespace = "\n  AMAZON   EU   S.A.R.L.  \t "
+    payee_iban = fake_iban()
+    payee_bic = "bic"
+    amount = "1,23"
+    currency = "EUR"
+
+    importer = sparkasse(
+        iban=owner_iban, importer_account="irrelevant", date_format=date_format
+    )
+    csv_row = make_csv_row(
+        fields=importer.fields,
+        kwargs={
+            "Auftragskonto": owner_iban,
+            "Valutadatum": booking_date,
+            "Buchungstext": posting_type,
+            "Verwendungszweck": reference_with_whitespace,
+            "Beguenstigter/Zahlungspflichtiger": payee_with_whitespace,
+            "Kontonummer/IBAN": payee_iban,
+            "BIC (SWIFT-Code)": payee_bic,
+            "Betrag": amount,
+            "Waehrung": currency,
+        },
+    )
+
+    txn = importer.csv_to_txn(csv_row=csv_row)
+
+    # Verify whitespace has been cleaned
+    assert (
+        txn.reference == "Multiple spaces and tabs"
+    ), f"Expected cleaned reference, got: '{txn.reference}'"
+    assert (
+        txn.payee_name == "AMAZON EU S.A.R.L."
+    ), f"Expected cleaned payee, got: '{txn.payee_name}'"
