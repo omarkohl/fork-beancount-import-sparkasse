@@ -49,7 +49,7 @@ def test_account_processor(file_content):
 
     affected_txn = TXN(
         owner_iban="owner_iban",
-        booking_date=datetime.now().date(),  # type: ignore
+        date=datetime.now(),
         posting_type="posting_type",
         reference="rent",
         payee_name="Mr Landlord and Mrs Landlordess",
@@ -65,7 +65,7 @@ def test_account_processor(file_content):
 
     unaffected_txn = TXN(
         owner_iban="owner_iban",
-        booking_date=datetime.now().date(),  # type: ignore
+        date=datetime.now(),
         posting_type="posting_type",
         reference="something special",
         payee_name="someone else",
@@ -156,7 +156,7 @@ def test_meta_processor_metatags(file_content, expected_meta):
 
     txn = TXN(
         owner_iban="owner_iban_affected",
-        booking_date=datetime.now().date(),  # type: ignore
+        date=datetime.now(),
         posting_type="posting_type_affected",
         reference="reference_affected",
         payee_name="payee_name_affected",
@@ -171,7 +171,7 @@ def test_meta_processor_metatags(file_content, expected_meta):
 
     unaffected_txn = TXN(
         owner_iban="unaffected_owner_iban",
-        booking_date=datetime.now().date(),  # type: ignore
+        date=datetime.now(),
         posting_type="unaffected_posting_type",
         reference="unaffected_reference",
         payee_name="unaffected_payee_name",
@@ -256,7 +256,7 @@ def test_meta_processor_txnattributes(file_content, expected_attrs):
 
     txn = TXN(
         owner_iban="owner_iban_affected",
-        booking_date=datetime.now().date(),  # type: ignore
+        date=datetime.now(),
         posting_type="posting_type_affected",
         reference="reference_affected ",
         payee_name="payee_name_affected",
@@ -277,7 +277,7 @@ def test_meta_processor_txnattributes(file_content, expected_attrs):
 
     unaffected_txn = TXN(
         owner_iban="unaffected_owner_iban",
-        booking_date=datetime.now().date(),  # type: ignore
+        date=datetime.now(),
         posting_type="unaffected_posting_type",
         reference="unaffected_reference",
         payee_name="unaffected_payee_name",

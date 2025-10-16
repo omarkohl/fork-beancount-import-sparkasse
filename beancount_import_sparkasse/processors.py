@@ -70,8 +70,7 @@ class CSVtoTXNHook(ABC):
         return txn
 
     @abstractmethod
-    def augment(self, identifier: str, matches: list[re.Match], txn: TXN) -> None:
-        ...
+    def augment(self, identifier: str, matches: list[re.Match], txn: TXN) -> None: ...
 
 
 def patch_hooks(importer: BaseImporter, hooks: Sequence[CSVtoTXNHook]):

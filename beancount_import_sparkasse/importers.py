@@ -1,24 +1,26 @@
 #!/usr/bin/env python3
 
+from __future__ import annotations
+
 import csv
 import logging
 import re
-from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
 
+from beancount.core.amount import Amount
 from beancount.core.data import (
     EMPTY_SET,
-    Amount,
     Balance,
     Directive,
+    Entries,
     Posting,
     Transaction,
     new_metadata,
 )
-from beancount.ingest.importer import ImporterProtocol
+from beangulp import Importer
 
 from beancount_import_sparkasse.models import TXN
 
@@ -26,9 +28,9 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class BaseImporter(ABC, ImporterProtocol):
+class BaseImporter(Importer):
     iban: str
-    account: str
+    importer_account: str  # Renamed to avoid collision with account() method
     fields: Sequence[str]
     date_format: str
     first_data_row: int = 1
@@ -37,18 +39,16 @@ class BaseImporter(ABC, ImporterProtocol):
     delimiter: str = ";"
     quotechar: str = '"'
     dates_ascending: bool = True
+    flag: str = "*"  # Default flag for transactions
 
-    @abstractmethod
     def parse_amount(self, amount: str) -> Decimal:
-        ...
+        raise NotImplementedError
 
-    @abstractmethod
     def csv_to_txn(self, csv_row: dict[str, str]) -> TXN:
-        ...
+        raise NotImplementedError
 
-    @abstractmethod
-    def get_final_balance(self, file) -> Directive | None:
-        ...
+    def get_final_balance(self, filepath: str) -> Directive | None:
+        raise NotImplementedError
 
     @property
     def expected_header(self) -> str:
@@ -56,15 +56,15 @@ class BaseImporter(ABC, ImporterProtocol):
             [f"{self.quotechar}{field}{self.quotechar}" for field in self.fields]
         )
 
-    def extract(self, file, existing_entries=None) -> list[Transaction]:  # type: ignore
-        with open(file.name, encoding=self.file_encoding) as f:
+    def extract(self, filepath: str, existing: Entries) -> Entries:
+        with open(filepath, encoding=self.file_encoding) as f:
             csv_rows = csv.DictReader(
                 f,
                 delimiter=self.delimiter,
                 quotechar=self.quotechar,
                 fieldnames=self.fields,
             )
-            extracted_directives = []
+            extracted_directives: Entries = []
             header_parsed = False
             for i, row in enumerate(csv_rows):
                 if None in row:
@@ -83,31 +83,47 @@ class BaseImporter(ABC, ImporterProtocol):
                 logger.debug(f"Converted to {txn=}")
 
                 transaction = make_transaction(
-                    account=self.account,
+                    account=self.importer_account,
                     txn=txn,
-                    fname=file.name,
+                    fname=filepath,
                     lineno=i + 2,
-                    flag=self.FLAG,
+                    flag=self.flag,
                 )
                 logger.info(f"New {transaction=}")
                 extracted_directives.append(transaction)
 
-        final_balance = self.get_final_balance(file=file)
+        final_balance = self.get_final_balance(filepath=filepath)
         if final_balance:
             logger.info(f"New {final_balance=}")
             extracted_directives.append(final_balance)
 
         return extracted_directives
 
-    def file_account(self, _):
-        return self.account
+    def account(self, filepath: str) -> str:
+        """Return the account associated with this file."""
+        return self.importer_account
 
-    def file_date(self, file):
-        return max(map(lambda entry: entry.date, self.extract(file)))
+    def date(self, filepath: str) -> datetime.date | None:
+        """Return the date associated with this file."""
+        try:
+            entries = self.extract(filepath)
+            if entries:
+                return max(entry.date for entry in entries if hasattr(entry, "date"))
+        except Exception:
+            pass
+        return None
+
+    def identify(self, filepath: str) -> bool:
+        """Return True if this importer matches the given file."""
+        return False  # Override in subclasses
+
+    def filename(self, filepath: str) -> str | None:
+        """Return the archival filename for the given file."""
+        return None  # Override in subclasses
 
 
 @dataclass
-class SparkasseCsvCamtImporter(BaseImporter):
+class SparkasseCSVCAMTImporter(BaseImporter):
     """Beancount importer for CSV-CAMT exports of the German Sparkasse."""
 
     date_format: str = "%d.%m.%y"
@@ -137,11 +153,11 @@ class SparkasseCsvCamtImporter(BaseImporter):
         """Removes German thousands separator and converts decimal point to US."""
         return Decimal(amount.replace(".", "").replace(",", "."))
 
-    def get_final_balance(self, file) -> Directive | None:
+    def get_final_balance(self, filepath: str) -> Directive | None:
         return None
 
-    def identify(self, file) -> bool:
-        with open(file.name, encoding=self.file_encoding) as f:
+    def identify(self, filepath: str) -> bool:
+        with open(filepath, encoding=self.file_encoding) as f:
             header = f.readline().strip()
             csv_row = f.readline().strip()
 
@@ -167,8 +183,8 @@ class SparkasseCsvCamtImporter(BaseImporter):
         )
         return txn
 
-    def file_name(self, file):
-        match = re.search(r"\d{8}-(\d{7})-umsatz", file.name)
+    def filename(self, filepath: str):
+        match = re.search(r"\d{8}-(\d{7})-umsatz", filepath)
         if match:
             return f"{match.group(1)}.camt.csv"
         return None
@@ -199,8 +215,8 @@ class DKBCsvImporter(BaseImporter):
         """Removes German thousands separator and converts decimal point to US."""
         return Decimal(amount.replace(".", "").replace(",", "."))
 
-    def get_final_balance(self, file) -> tuple[datetime, Decimal] | None:
-        with open(file.name, encoding=self.file_encoding) as f:
+    def get_final_balance(self, filepath: str) -> tuple[datetime, Decimal] | None:
+        with open(filepath, encoding=self.file_encoding) as f:
             for i, line in enumerate(f.readlines()):
                 regex = r'Kontostand vom (\d+.\d+.\d+):";"([\d.,]+) (\w+)";'
                 logger.debug(f"Trying to match {regex=} in {line=}")
@@ -210,18 +226,18 @@ class DKBCsvImporter(BaseImporter):
                     amount = Decimal(self.parse_amount(match.group(2)))
                     currency = match.group(3)
                     final_balance = make_balance(
-                        fname=file.name,
+                        fname=filepath,
                         lineno=i + 1,
                         date=bal_date,
-                        account=self.account,
+                        account=self.importer_account,
                         currency=currency,
                         amount=amount,
                     )
                     return final_balance
 
-    def identify(self, file) -> bool:
-        logger.info(f"Looking at {file.name}")
-        with open(file.name, encoding=self.file_encoding) as f:
+    def identify(self, filepath: str) -> bool:
+        logger.info(f"Looking at {filepath}")
+        with open(filepath, encoding=self.file_encoding) as f:
             while line := f.readline():
                 line = line.strip()[:-1]
                 regex = r'"Kontonummer:";"(\w+) / Girokonto'
@@ -260,8 +276,8 @@ class DKBCsvImporter(BaseImporter):
         )
         return txn
 
-    def file_name(self, file):
-        match = re.search(r"(\d+)", file.name)
+    def filename(self, filepath: str):
+        match = re.search(r"(\d+)", filepath)
         if match:
             return f"{match.group(1)}.csv"
         return None
@@ -300,23 +316,23 @@ class GLSCsvImporter(BaseImporter):
         """Removes German thousands separator and converts decimal point to US."""
         return Decimal(amount.replace(".", "").replace(",", "."))
 
-    def get_final_balance(self, file) -> Directive | None:
-        with open(file, encoding=self.file_encoding) as f:
+    def get_final_balance(self, filepath: str) -> Directive | None:
+        with open(filepath, encoding=self.file_encoding) as f:
             csv_rows = csv.DictReader(
                 f, delimiter=self.delimiter, quotechar=self.quotechar
             )
             csv_row = next(csv_rows)
             return make_balance(
-                fname=file.name,
+                fname=filepath,
                 lineno=2,
                 date=datetime.strptime(csv_row["Buchungstag"], self.date_format),
-                account=self.account,
+                account=self.importer_account,
                 currency=csv_row["Waehrung"],
                 amount=Decimal(self.parse_amount(csv_row["Saldo nach Buchung"])),
             )
 
-    def identify(self, file) -> bool:
-        with open(file.name, encoding=self.file_encoding) as f:
+    def identify(self, filepath: str) -> bool:
+        with open(filepath, encoding=self.file_encoding) as f:
             for _ in range(10):
                 header = f.readline().strip()
                 if header == self.expected_header:
@@ -343,8 +359,8 @@ class GLSCsvImporter(BaseImporter):
         )
         return txn
 
-    def file_name(self, file):
-        match = re.search(r"(\d+)", file.name)
+    def filename(self, filepath: str):
+        match = re.search(r"(\d+)", filepath)
         if match:
             return f"{match.group(1)}.csv"
         return None
@@ -376,7 +392,7 @@ def make_transaction(
 
 def make_posting(
     amount: Decimal | None,
-    currency: str | None,
+    currency: str,
     account: str,
     flag: str | None = None,
 ):
