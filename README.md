@@ -7,6 +7,14 @@ The importer is available on [PyPI](https://pypi.org/project/beancount-import-sp
 pip install --user beancount-import-sparkasse
 ```
 
+## Download Bank Statement
+
+1. Log into your Sparkasse account
+2. Choose the correct bank account
+3. Click 'Exportieren'
+4. Choose `Excel (CSV-CAMT V8)` in the dropdown. Note that `CSV-CAMT V2` also
+   works but contains less information.
+
 ## Configuration
 Add the importer to your `beancount` import config
 
@@ -15,7 +23,7 @@ from beancount_import_sparkase import SparkasseCSVCAMTImporter
 
 CONFIG = [
     SparkasseCSVCAMTImporter(
-        iban="DE01 2345 6789 0123 4567 89",
+        iban="DE01234567890123456789",
         account="Assets:DE:Sparkasse:Giro"
     )
 ]
