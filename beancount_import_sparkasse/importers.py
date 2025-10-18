@@ -21,6 +21,7 @@ from beancount.core.data import (
     new_metadata,
 )
 from beangulp import Importer
+from beangulp.importers import csvbase
 
 from beancount_import_sparkasse.models import TXN
 
@@ -381,6 +382,205 @@ class GLSCsvImporter(BaseImporter):
         if match:
             return f"{match.group(1)}.csv"
         return None
+
+
+class SparkasseMastercard(csvbase.Importer):
+    """Beancount importer for Sparkasse Mastercard CSV exports.
+
+    This importer handles CSV exports from Sparkasse Mastercard statements.
+    """
+
+    # CSV dialect configuration
+    class dialect(csv.excel):
+        delimiter = ";"
+        quotechar = '"'
+
+    # File reading configuration
+    encoding = "ISO-8859-1"
+    skiplines = 0
+    names = True  # First row contains column names
+
+    # Column definitions - these map to the CSV columns
+    # Required fields
+    date = csvbase.Date("Buchungsdatum", frmt="%d.%m.%y")
+    payee = csvbase.Columns("Transaktionsbeschreibung")
+    amount = csvbase.Amount("Buchungsbetrag", subs={r"\.": "", r",": "."})
+
+    # Optional fields
+    currency = csvbase.Column("Buchungswährung", default="EUR")
+    narration = csvbase.Column("Transaktionsbeschreibung Zusatz")
+
+    def __init__(
+        self,
+        account: str,
+        credit_card_number: str,
+        currency: str = "EUR",
+        flag: str = "*",
+    ):
+        """Initialize the Sparkasse Mastercard importer.
+
+        Args:
+            account: The beancount account to use for imported transactions
+            credit_card_number: Credit card number (can be full number or with 8
+                middle digits obfuscated)
+            currency: Default currency (default: EUR)
+            flag: Default transaction flag (default: *)
+        """
+        super().__init__(account=account, currency=currency, flag=flag)
+        self.credit_card_number = credit_card_number
+
+    def identify(self, filepath: str) -> bool:
+        """Identify if this file can be handled by this importer.
+
+        Args:
+            filepath: Path to the file to identify
+
+        Returns:
+            True if this importer can handle the file
+        """
+        try:
+            # Check filename pattern first
+            if not self._matches_filename_pattern(filepath):
+                return False
+
+            # Check file content
+            with open(filepath, encoding=self.encoding) as f:
+                header = f.readline().strip()
+                # Check for typical Sparkasse Mastercard CSV headers
+                if not (
+                    "Buchungsdatum" in header and "Transaktionsbeschreibung" in header
+                ):
+                    return False
+
+                # Check if credit card number matches in the first data row
+                first_data_line = f.readline().strip()
+                return self._matches_credit_card_in_content(first_data_line)
+        except Exception:
+            return False
+
+    def _matches_filename_pattern(self, filepath: str) -> bool:
+        """Check if the filename matches the expected pattern and credit card number.
+
+        Args:
+            filepath: Path to check
+
+        Returns:
+            True if filename pattern and credit card number match
+        """
+        # Extract filename from path
+        filename = filepath.split("/")[-1]
+
+        # Pattern: umsatz-XXXX________YYYY-YYYYMMDD.CSV
+        match = re.search(r"umsatz-(\d{4})_{8}(\d{4})-\d{8}\.CSV", filename)
+        if not match:
+            return False
+
+        first_four = match.group(1)
+        last_four = match.group(2)
+
+        # Check against our credit card number (handle both obfuscated and full formats)
+        return self._matches_credit_card_pattern(first_four, last_four)
+
+    def _matches_credit_card_in_content(self, data_line: str) -> bool:
+        """Check if the credit card number in the CSV content matches our
+        expected number.
+
+        Args:
+            data_line: First data line from CSV
+
+        Returns:
+            True if credit card number matches
+        """
+        # Extract credit card number from CSV line (first column)
+        parts = data_line.split(";")
+        if not parts:
+            return False
+
+        card_in_file = parts[0].strip('"')
+
+        # Format: "1234 **** **** 5678"
+        match = re.search(r"(\d{4}) \*{4} \*{4} (\d{4})", card_in_file)
+        if not match:
+            return False
+
+        first_four = match.group(1)
+        last_four = match.group(2)
+
+        return self._matches_credit_card_pattern(first_four, last_four)
+
+    def _matches_credit_card_pattern(self, first_four: str, last_four: str) -> bool:
+        """Check if the given first and last four digits match our credit card number.
+
+        Args:
+            first_four: First 4 digits
+            last_four: Last 4 digits
+
+        Returns:
+            True if pattern matches
+        """
+        # Handle different formats of credit_card_number
+        if "*" in self.credit_card_number or "_" in self.credit_card_number:
+            # Obfuscated format: extract first and last 4 digits
+            # Could be "1234 **** **** 5678" or "1234________5678"
+            card_match = re.search(r"(\d{4}).*?(\d{4})", self.credit_card_number)
+            if card_match:
+                return (
+                    card_match.group(1) == first_four
+                    and card_match.group(2) == last_four
+                )
+        else:
+            # Full number format: extract first and last 4 digits
+            digits_only = re.sub(r"\D", "", self.credit_card_number)
+            if len(digits_only) >= 8:
+                return digits_only[:4] == first_four and digits_only[-4:] == last_four
+
+        return False
+
+    def filename(self, filepath: str) -> str | None:
+        """Generate a filename for archiving the imported file.
+
+        Args:
+            filepath: Original filepath
+
+        Returns:
+            Suggested filename for archiving, or None
+        """
+        match = re.search(r"umsatz-(\d{4})_{8}(\d{4})-(\d{8})\.CSV", filepath)
+        if match:
+            first_four = match.group(1)
+            last_four = match.group(2)
+            date = match.group(3)
+
+            # Only generate filename if the card number matches
+            if not self._matches_credit_card_pattern(first_four, last_four):
+                return None
+
+            # Generate a clean card identifier from our credit card number
+            card_id = self._generate_card_identifier()
+
+            return f"{date}-{card_id}.mastercard.csv"
+        return None
+
+    def _generate_card_identifier(self) -> str:
+        """Generate a clean card identifier for filenames.
+
+        Returns:
+            A string identifier for the credit card
+        """
+        # Extract first and last 4 digits from credit card number
+        if "*" in self.credit_card_number or "_" in self.credit_card_number:
+            # Obfuscated format
+            card_match = re.search(r"(\d{4}).*?(\d{4})", self.credit_card_number)
+            if card_match:
+                return f"{card_match.group(1)}{card_match.group(2)}"
+        else:
+            # Full number format
+            digits_only = re.sub(r"\D", "", self.credit_card_number)
+            if len(digits_only) >= 8:
+                return f"{digits_only[:4]}{digits_only[-4:]}"
+
+        # Fallback: use a sanitized version of the input
+        return re.sub(r"[^\w]", "", self.credit_card_number)[:8]
 
 
 def make_transaction(
